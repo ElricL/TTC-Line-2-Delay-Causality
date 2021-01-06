@@ -1,0 +1,420 @@
+---
+title: "Uncovering causality on TTC Line 2 Delays"
+author: "Elric Lazaro"
+date: "12/23/2020"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(broom)
+library(opendatatoronto)
+library(kableExtra)
+
+sample_size <- 500000
+set.seed(304)
+
+
+months <- c("January", "February", "March", "April", "May", "June", "July", "August",
+                     "September", "October", "November", "December")
+months_probability <- c(0.095, 0.095, 0.095, 0.095, 0.06, 0.06, 0.06, 0.06, 0.095, 0.095,
+                        0.095, 0.095)
+
+possible_days <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+days_probability <- c(0.17, 0.17, 0.17, 0.17, 0.17, 0.075, 0.075)
+
+line_2_stations <- c("KIPLING STATION", "ISLINGTON STATION", "ROYAL YORK STATION", "OLD MILL STATION", "JANE STATION", "RUNNYMEDE STATION", "HIGH PARK STATION", "KEELE STATION", "DUNDAS WEST STATION", "LANSDOWNE STATION", "DUFFERIN STATION", "OSSINGTON STATION", "CHRISTIE STATION", "BATHURST STATION", "SPADINA BD STATION", "ST GEORGE BD STATION", "BAY STATION", "YONGE BD STATION", "SHERBOURNE STATION", "CASTLE FRANK STATION", "BROADVIEW STATION", "CHESTER STATION", "PAPE STATION", "DONLANDS STATION", "GREENWOOD STATION", "COXWELL STATION", "WOODBINE STATION", "MAIN STREET STATION", "VICTORIA PARK STATION", "WARDEN STATION", "KENNEDY BD STATION")
+stations_probability <- c(0.08, 0.03, 0.03, 0.004, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.08, 0.03, 0.08, 0.03, 0.004, 0.03, 0.004, 0.03, 0.004, 0.004, 0.03, 0.03, 0.03, 0.03, 0.03, 0.08)
+
+station_entry_data <-
+  tibble(
+    unique_id = c(1:sample_size),
+    Month = sample(x = months,
+      size = sample_size,
+      replace = TRUE,
+      prob = months_probability
+    ),
+    Day = sample(
+      x = possible_days,
+      size = sample_size,
+      replace = TRUE,
+      prob = days_probability
+    ),
+    Station = sample(
+      x = line_2_stations,
+      size = sample_size,
+      replace = TRUE,
+      prob = stations_probability
+    ),
+    Bound = sample(
+      x = c("E", "W"),
+      size = sample_size,
+      replace = TRUE,
+      prob = c(0.50, 0.50)
+    )
+  )
+
+station_entry_data <-
+  station_entry_data %>% 
+  mutate(month_num = case_when(
+      Month == "November" ~ 1, Month == "December" ~ 3, Month == "October" ~ 3,
+      Month == "September" ~ 4, Month == "June" ~ 5, Month == "July" ~ 6,
+      Month == "August" ~ 7, Month == "April" ~ 9, Month == "May" ~ 9,
+      Month == "March" ~ 10, Month == "February" ~ 11, Month == "January" ~ 12,
+      TRUE ~ 0),
+    day_num = case_when(
+      Day == "Sunday" ~ 1, Day == "Saturday" ~ 2, Day == "Monday" ~ 3,
+      Day == "Wednesday" ~ 5, Day == "Friday" ~ 5, Day == "Thursday" ~ 7,
+      Day == "Tuesday" ~ 7,
+      TRUE ~ 0),
+    station_num = case_when(
+      Station == "RUNNYMEDE STATION" ~ 2, Station == "LANSDOWNE STATION" ~ 2,
+      Station == "PAPE STATION" ~ 5, Station == "DUFFERIN STATION" ~ 5,
+      Station == "SHERBOURNE STATION" ~ 5, Station == "CASTLE FRANK STATION" ~ 6,
+      Station == "CHESTER STATION" ~ 7, Station == "BAY STATION" ~ 8,
+      Station == "SPADINA BD STATION" ~ 9, Station == "MAIN STREET STATION" ~ 11,
+      Station == "BATHURST STATION" ~ 11, Station == "HIGH PARK STATION" ~ 12,
+      Station == "DONLANDS STATION" ~ 14, Station == "WOODBINE STATION" ~ 14,
+      Station == "CHRISTIE STATION" ~ 15, Station == "OSSINGTON STATION" ~ 17,
+      Station == "BROADVIEW STATION" ~ 17, Station == "DUNDAS WEST STATION" ~ 18,
+      Station == "OLD MILL STATION" ~ 19, Station == "ROYAL YORK STATION" ~ 20,
+      Station == "JANE STATION" ~ 21, Station == "ST GEORGE BD STATION" ~ 23,
+      Station == "YONGE BD STATION" ~ 23, Station == "GREENWOOD STATION" ~ 25,
+      Station == "KEELE STATION" ~ 25, Station == "VICTORIA PARK STATION" ~ 26,
+      Station == "WARDEN STATION" ~ 27, Station == "ISLINGTON STATION" ~ 28,
+      Station == "COXWELL STATION" ~ 29, Station == "KENNEDY BD STATION" ~ 30,
+      Station == "KIPLING STATION" ~ 31,
+      TRUE ~ 0)
+  ) %>% 
+  rowwise() %>% 
+  mutate(sum_num = sum(month_num, day_num, station_num),
+         softmax_prob = exp(sum_num)/exp(50),
+         Delayed = sample(
+           x = c(0:1),
+           size = 1,
+           replace = TRUE,
+           prob = c(1-softmax_prob, softmax_prob)
+         )
+  ) %>% 
+  ungroup() %>% 
+  dplyr::select(-month_num, -day_num, -station_num, 
+                -sum_num, -softmax_prob)
+
+station_entry_data <-
+  station_entry_data %>% 
+  mutate(mean_travel_time = if_else(Delayed == 1, 26.816359, 20)) %>% 
+  rowwise() %>% 
+  mutate(travel_time = rnorm(1, mean_travel_time, sd = 2)
+  ) %>% 
+  ungroup() %>% 
+  dplyr::select(-mean_travel_time)
+
+station_entry_data <-
+  station_entry_data %>% 
+  mutate_at(vars(Month, Day, Station, Bound, Delayed), ~as.factor(.)) 
+                            # Change some to factors
+
+# table(station_entry_data$Delayed)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Grab all of 2019 delay data
+January <- get_resource("9a824dba-20cc-40b1-8f26-778a34a0f3a8")
+February <- get_resource("e6bac74e-2da2-4429-a76f-202eba3d9193")
+March <- get_resource("0511879f-3233-4a42-8c28-93b432132c8b")
+April <- get_resource("447b4a5a-f696-4f05-86c0-9602f56922e5")
+May <- get_resource("a302fcab-81a1-4142-b0ec-031b0666c1df")
+June <- get_resource("655a138c-d381-4fe7-b3b3-a6620825161f")
+July <- get_resource("34d9619f-0239-4dad-a598-b6bc71ce1071")
+August <- get_resource("b6557580-a0f4-4c96-9ce2-82657b62e88a")
+September <- get_resource("e2a5e386-ddf7-4416-8e84-c3508c4f9a4f")
+October <- get_resource("fd837bd2-85ed-485e-ba02-46e29af52024")
+November <- get_resource("ac734fde-145d-4313-9090-3d8137d39852")
+December <- get_resource("967ea5f7-de10-4ca8-a2fd-e92a5ffd0e16")
+
+delays_2019 <- rbind(January, February, March, April, May, June, July, August, 
+                     September, October, November, December)
+rm(January, February, March, April, May, June, July, August, 
+   September, October, November, December)
+delays_2019 <- delays_2019 %>% 
+          filter(Line == 'BD')
+delays_2019 <- delays_2019 %>% drop_na(Date)
+delays_2019 <- delays_2019 %>% drop_na(Day)
+delays_2019 <- delays_2019 %>% drop_na(Station)
+delays_2019 <- delays_2019 %>% drop_na(Bound)
+delays_2019 <- delays_2019 %>% drop_na(Line)
+delays_2019$Date <- months(as.Date(delays_2019$Date))
+delays_2019 <- delays_2019 %>% rename(Month = Date)
+delays_2019 <- delays_2019 %>% filter(!grepl(" TO ", delays_2019$Station))
+delays_2019 <- delays_2019 %>% filter(!grepl("N", delays_2019$Bound))
+delays_2019 <- delays_2019 %>% filter(!grepl("S", delays_2019$Bound))
+delays_2019 <- delays_2019[ , !(names(delays_2019) %in% c("Line"))]
+
+# Rank month by number of delay occurrences
+delays_month <- delays_2019 %>% count(Month)
+# Results from previous work
+average_delays <- c(6.809240, 8.855856, 7.099222, 5.797320, 6.281098, 7.457539, 
+                    6.108153, 6.544423, 6.373494, 6.787645, 6.886827, 6.795494)
+delays_month$average_delay_time <- average_delays
+order.n <- order(delays_month$n)
+delays_month <- delays_month[order.n,]
+delays_month <- delays_month %>% mutate(ranking = 1:n())
+
+# Rank Days by number of delay occurrences
+delays_day <- delays_2019 %>% count(Day)
+order.n <- order(delays_day$n)
+delays_day <- delays_day[order.n,]
+delays_day <- delays_day %>% mutate(ranking = 1:n())
+
+# Rank Stations by number of delay occurrences
+delays_station <- delays_2019 %>% count(Station)
+## Those with less than 60 have uninterpretable station names
+delays_station <- 
+  delays_station %>% 
+  filter(n > 60)
+order.n <- order(delays_station$n)
+delays_station <- delays_station[order.n,]
+delays_station <- delays_station %>% mutate(ranking = 1:n())
+
+# Rank Bounds by number of delay occurrences
+delays_bound <- delays_2019 %>% count(Bound)
+order.n <- order(delays_bound$n)
+delays_bound <- delays_bound[order.n,]
+delays_bound <- delays_bound %>% mutate(ranking = 1:n())
+```
+
+*Code and data supporting this analysis is available at:* \
+https://github.com/ElricL/TTC-Line-2-Delay-Causality.git
+
+## Abstract
+|       This study seeks to find root causalities on TTC Line 2 Delays in hopes of improving the subway system. Through the use of propensity score matching, simulated subway entry data was analyzed based on travel time. Evidence of cold seasonal times and peak days of the week were found from observing the logistic regression model used to calculate the propensity scores. However no significant findings were found when evaluating the matching which suggests that a focus shift is required, either by looking at the system more as a whole or diving in deeper.
+
+### Keywords
+TTC, Toronto, Subway System, Propensity Score Matching, Delay, Causal inference
+
+## 1. Introduction
+
+|       One of the many daily challenges students who did not live by UTSG faced was commuting with major delays. This struggle can also be seen from those that work in downtown Toronto as well. A Regular daily commuting route often consists of many services such as MiWay buses, TTC Subway, Go Buses, and many more. Yet all of which are very susceptible to delays. TTC Subways often receive backlash, with the service often requiring train exchanges, emergency stops, maintenance, and slowdowns. Despite all the recent improvements such as Presto gates and more accessibility elevators, to this day many delay issues are still apparent with TTC subways. These problems have desensitized many TTC Subway users who often simply leave home, school, or work early to beat any possible major delays. While one paper may not be enough to fully understand TTC’s complex subway system, it is still important to start uncovering some of the underlying problem’s that we have come to accept today.
+
+|       This study seeks to delve deeper into what variables can likely cause Subway delays and how the delays overall affect the subway user's travel time, which remained largely unclear from previous study TTC Subway Delay Cause Analysis (Lazaro, 2020). Propensity score matching (PSM) will be used to identify any major causalities on Subway Delays on TTC Line 2 stations. The advantage of PSM is that it will allow us to compare observation outcomes and consider large number of variables without it having a large effect on our sample size.
+
+|       The observed data will be simulated based on observed patterns from Toronto's open data on TTC Subway Delays along with the study, TTC Subway Delay Cause Analysis (Lazaro, 2020). More on how the data is simulated will be further expanded upon in the Methodology section.
+
+## 2. Methodology
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+propensity_score <- glm(Delayed ~ Month + Day + Station + Bound, 
+                        family = binomial,
+                        data = station_entry_data)
+
+station_entry_data <- 
+  augment(propensity_score, 
+          data = station_entry_data,
+          type.predict = "response") %>% 
+  dplyr::select(-.resid, -.std.resid, -.hat, -.sigma, -.cooksd)
+
+station_entry_data <- 
+  station_entry_data %>% 
+  arrange(.fitted, Delayed)
+
+station_entry_data$treated <- 
+  if_else(station_entry_data$Delayed == 0, 0, 1)
+
+station_entry_data$treated <- 
+  as.integer(station_entry_data$treated)
+
+matches <- arm::matching(z = station_entry_data$treated, 
+                         score = station_entry_data$.fitted)
+
+station_entry_data <- cbind(station_entry_data, matches)
+
+station_entry_data_matched <- 
+  station_entry_data %>% 
+  filter(match.ind != 0) %>% 
+  dplyr::select(-match.ind, -pairs, -treated)
+
+propensity_score_regression <- 
+lm(travel_time ~ Month + Day + Station + Bound + Delayed, 
+              data = station_entry_data_matched)
+
+#summary(propensity_score_regression)
+#huxtable::huxreg(propensity_score_regression)
+```
+
+### 2.1 Data
+
+|       The entries in the simulated data represents an individual entering a station and their travel time onward. Each row or entry consist of the month, day, station, bound (East or West), whether there is a delay or not, and the travel time. Likelier events are prioritized and have higher chance to appear in the simulated data. The target population for this dataset is all TTC Subway users with the frame population being the simulated users observed/generated in the dataset
+
+|       Business days, school terms, and the reported busiest stations from Urbanized (Chan, 2019) were taken into consideration into which values are more likely to appear for  month, day, and station. The sample size totals to 500,000 observations given the simulated data is meant to represent a year. Whether the individual is delayed or not depends on the generated month, day, and station. 
+
+|       Utilizing the 2019 TTC Subway delays dataset observed from the study, TTC Subway Delay Cause Analysis (Lazaro, 2020), I've ranked the distinct values for the three variables based on the number of occurrences. The rankings for each variables can be found in the appendix with the lowest number having lowest number of occurrences to highest number having highest number of occurrences. Note that the values with number of occurrences that are tied or quite close to each other will be assigned the same ranking. The rankings are applied for each entries depending on what values are generated and then the total ranking is used to calculate a softmax probability for the chance of delay. Note bound was not used in this probability formula as both East and West had very close number of occurrences. Since we used the rank for month, day, and station to determine the probability of delay, we are enforcing the more common occurrences observed from Toronto's dataset to have higher chance on having delays in our simulation. For instance we can see in Figure 1 that the simulated data relatively has the higher numbered rank stations from the Toronto data to have highest amount of delay occurrences.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+sim_delays_station <- delays_2019 %>% count(Station)
+sim_delays_station <- sim_delays_station[with(sim_delays_station,order(-n)),]
+station_graph <- ggplot(data=sim_delays_station[1:10,], 
+                        aes(x= reorder(Station, -n), y=n)) +
+                        geom_bar(stat="identity", fill="red")
+station_graph <- station_graph + labs(title = "Top 10 Delay occurrences by Station 
+                    (Simulated)", x = "Station", y = "Delay occurrences")
+station_graph <- station_graph + 
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+station_graph
+```
+__Figure 1:__ Top 10 Delay occurrences by Station
+
+The softmax probability is calculated simply by $p = \frac{Sum\ of\ rankings}{exp(50)}$. Note that the probability of not getting delayed would then be $1 - p$. 
+
+|       Lastly to simulate the travel time, the normal distribution was chosen. The normal distribution is used to take advantage on the dataset's large size, specifically  the sampling distribution of the mean will approach closer to a normal distribution. The distribution applied has a mean ($\mu$) 20 minutes for non delayed and 20 + 6.82 minutes (travel time mean plus average delay time) when delayed. With the average delay times per station from TTC Subway Delay Cause Analysis (Lazaro, 2020), the mean delay of 6.82 was calculated. Check table 5 for the average delay time by Month calculated from the previous study. As for the standard mean, 20 was roughly estimated from the TTC Subway Travel time Chart (Flack, 2019). To see examples of entries in the data, please refer to Table 8 in the appendix.
+
+|       With the simulated data generated, we now have our dataset which we'll be studying through PSM methodology. The final two variables generated are significant as delay will be our Treatment with travel time being the outcome of interest for our PSM model which is further explained in the 2.2 Model section.
+
+### 2.2 Model
+
+|       Propensity Score matching allows us to compare and evaluate the outcome of our observations to determine any significant variables. Firstly, we want to see the propensity of someone getting delayed and then match based on that. A logistic regression model will be used to determine the propensity score for each observations. Aside from determining propensity scores, the model will also be used to observe p-values of the independent variables based on delay to determine any significant relationships. Specifically, check if the variables are less than 0.05 to signify a relationship. The variable Delayed will be modeled based on the independent variables Month, Day, Station, and Bound:
+
+\begin{align*}
+log(\frac{(p)}{1-(p)}) &= {\beta}_0 + 
+                            {\beta}_1X_{Month:\ January} + \\
+                        &    {\beta}_2X_{Month:\ February} +
+                            ... + \\
+                        &    {\beta}_12X_{Month:\ December} + 
+                            {\beta}_13X_{Day:\ Monday} + \\
+                        &   {\beta}_14X_{Day:\ Tuesday} + 
+                            ... + \\
+                        &    {\beta}_19X_{Day:\ Sunday} + 
+                            {\beta}_20X_{Station:\ KIPLING STATION} + \\
+                        &   {\beta}_21X_{Station:\ ISLINGTON STATION} + 
+                            ... + \\
+                        &    {\beta}_{22}X_{Station:\ KENNEDY BD STATION} + 
+                            {\beta}_{23}X_{Bound:\ E} + \\
+                        &    {\beta}_{24}X_{Bound:\ W}
+\end{align*}
+
+Once the logistic model is calculated, it will be forecasted onto the dataset, essentially calculating the probability of delay for each individual's entry to the subway. A new dataset will then be created by gathering those that have gotten delayed and match them with those that have not gotten delayed but have similar or same propensity scores. 
+
+|       To determine how the delays and other observed variables affect the travel time, a linear regression will be used on the new reduced-matching dataset:
+
+\begin{align*}
+y &= {\beta}_0 + 
+                            {\beta}_1X_{Month:\ January} + \\
+                        &    {\beta}_2X_{Month:\ February} +
+                            ... + \\
+                        &    {\beta}_12X_{Month:\ December} + 
+                            {\beta}_13X_{Day:\ Monday} + \\
+                        &   {\beta}_14X_{Day:\ Tuesday} + 
+                            ... + \\
+                        &    {\beta}_19X_{Day:\ Sunday} + 
+                            {\beta}_20X_{Station:\ KIPLING STATION} + \\
+                        &   {\beta}_21X_{Station:\ ISLINGTON STATION} + 
+                            ... + \\
+                        &    {\beta}_{22}X_{Station:\ KENNEDY BD STATION} + 
+                            {\beta}_{23}X_{Bound:\ E} + \\
+                        &    {\beta}_{24}X_{Bound:\ W}  + {\beta}_{25}X_{Delayed}
+\end{align*}
+
+This model will allow us how the treatment variable, delay, will affect the travel time as well as see any causalities with the other independent variables. To discover any significant variables, we will observe the p-value testing and seeing if it is less than 0.05 as a result of the model.
+
+## 3. Results
+
+|       As a result of the the applying probabilities based on rankings for the delay, in table 1 we can see there were 3,461 entries out of 500,000 observations that have experienced a delay. Calculating the number of delay occurrences out of 500,000 observations, we can see in theory there is approximately 0.7% chance to experience delay every time one enters a Line 2 subway station throughout the year. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+sim_delays <- station_entry_data %>% count(Delayed) %>% 
+              rename(
+                'number of occurences' = n
+              )
+sim_delays$Delayed = c("Not Delayed", "Delayed")
+kable(sim_delays) %>%
+  kable_styling(full_width = F)
+```
+__Table 1:__ Number of delay occurrences and those not delayed.
+
+|       When applying the logistic regression model to determine propensity scores, p-values for the independent variables based on delay was observed. Looking at the values seen in Table 2, we can see that some of the months such as December and each days of the week play a large role in the likeliness of a delay occurrence. However with the ranking probability logic applied, stations overall do not play much significance on delays. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(summary(propensity_score)$coeff) %>%
+  kable_styling(full_width = F)
+```
+__Table 2:__ Summary of Logistic Regression Model, used for Propensity Score logic.
+
+|       Given there are 3,461 delay occurrences, the reduced-matched dataset consists of 6922 observations to be evaluated. A linear model was used to determine relationships between the dependent variable travel time and the independent variables, Month, Day, Station, Bound, and Delayed. When looking at table 3, we can see most variables hold no to little significance, due to having p-values greater than 0.05. However, there appears to be a relationship to travel time and the month of July with a negative coefficient of -2.37. Given a normal distribution with different mean of 26.82 was applied for delay occurrences during simulation (20 for non delays), there is a relationship with travel time and delays with positive coefficient of 6.8.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(summary(propensity_score_regression)$coeff) %>%
+  kable_styling(full_width = F)
+```
+__Table 3:__ Summary of Linear Regression Model, used for evaluating propensity score matching.
+
+## 4 Discussion
+
+### 4.1 Summary
+
+|       In this study, Line 2 subway station entries along with travel time were simulated based on delay occurrence rankings for each variable and travel time from TTC Travel time Chart (Flack, 2019). Propensity score values are used to compare and match each similar observations. The values are calculated by calculating a logistic regression model from the simulated data and forecast it onto each observations. Entries with delays are then matched to those without delays based on similar propensity scores. The logistic model was also used to observe causality on delays by observing the evaluated p-values. With the reduced dataset with matched entries, we then examine the effect of getting delayed on travel time through evaluating the linear regression model and examine the p-values for any significant relationships.
+
+### 4.2 Conclusion
+
+|       If the simulated data is reproducible, the 0.7% chance calculated may generalize the percentage of delay occurrences. This means that whenever one enters a Line 2 subway station intending to take the train, one approximately has a chance of 0.7% to experience a delay. Note this is generalized for the entire year and may vary from month to month and other aspects that have not been studied. While 0.7% may seem small, given that user such as a student or worker that commutes on a daily basis, the chance of delay may no longer seem unlikely.
+
+|       After having observed the p-values from the initial logistic regression model, we can conclude that looking at each stations independently holds no significance to the chance of delay. It appears that the problem of delays cannot directly be connected to a specific station. This means that an improvement cannot simply be made on a station that may be lacking in performance rather one would need to look at the system of line 2 subways as a whole. In contrast, we have observed that weekdays and some of the months hold high significance. For weekdays we can see that the weekends, Saturday and Sunday, have the smallest chance of having delays given their small coefficients. Given that there's less Subway users on the weekends, this could tell us that the current system right now may not have the optimal support for large amount of Subway users for Line 2. For the months that shows to have significance with delays, one can observe that the months in winter season have positive coefficients while those in other seasons have negative. This supports the finding from previous study, TTC Subway Delay Cause Analysis (Lazaro, 2020), that the Line 2 system may need some improvement when it comes to colder weather.
+
+|       With the propensity matching evaluated, there were no relationships found for the outcome travel time aside from the variables Delayed and the month of July. Delayed however holds no particular interest given it is part of the process of simulating travel time as observations that are delayed are enforced to have a longer travel time. July has a negative coefficient which results in having faster travel times. This may mean that the Subway in summer generally fares well in comparison to other seasons. However given that other months had p-values greater than 0.05, the relationship between July and travel time remains inconclusive and may have appeared by chance due to the dataset being simulated. While we may not have learned much causality from conducting PSM, this could provide a lesson that a shift of focus may be needed. For instance, it may be problematic that looking at the stations independently given they are connected. It may be important to look at the TTC system more as a whole or look at more specific aspects.
+
+### 4.3 Weaknesses and Next Steps
+
+|       The data for this study is largely simulated, hence it may not generalize well to an equivalent data gathered from a survey. The probability for each value during the simulation process was evaluated under assumptions and as well as the observations from another dataset. Conducting studies on datasets related to the probabilities that were assumed may result into a more accurate simulated table. While it is very expensive it is also possible to conduct an experiment or a survey for each station. 
+
+|       This study still uses Toronto's open data on TTC Subway delays for reference on calculating the probability of delays. Unfortunately the dataset contains uninterpretable values which had to be removed which could result in skewing significant characteristics and creating bias observations. Instead of removing, it is possible to contact staff responsible of the dataset for consultance on how to clean up the dataset.
+
+|       Having only studied line 2, only a portion of the TTC subway system was studied. Therefore this paper does not generalize well to the overall system. This decision was made since each bounds have different characteristics such as different trains and regions. Fortunately this study can be reproduced for each line and we can then find any common patterns between each study to generalize characteristics of the TTC subway system as a whole.
+
+|       In the end not many causalities were identified from PSM methodology. This may be due to the methodology's problematic nature on heavy reliance with complete randomization. This randomization may lead to increase in imbalance. To see that this study's lack of causal findings is a result of imbalance, we can check other matching methods such as coarsened exact matching (King et al., 2019).
+
+## 5 Appendix
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(delays_station) %>%
+  kable_styling(full_width = F)
+```
+__Table 4:__ Station rankings by number of delay occurrences. (From Toronto's open TTC Delay Dataset)
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(delays_month) %>%
+  kable_styling(full_width = F)
+```
+__Table 5:__ Month rankings by number of delay occurrences. Also contains average delay time by month. (From Toronto's open TTC Delay Dataset)
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(delays_day) %>%
+  kable_styling(full_width = F)
+```
+__Table 6:__ Day rankings by number of delay occurrences. (From Toronto's open TTC Delay Dataset)
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+kable(delays_bound) %>%
+  kable_styling(full_width = F)
+```
+__Table 7:__ Bound rankings by number of delay occurrences. (From Toronto's open TTC Delay Dataset)
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+sample <- head(station_entry_data) %>% 
+  dplyr::select(unique_id, Month, Day, Station, Bound, Delayed, travel_time)
+kable(sample) %>%
+  kable_styling(full_width = F)
+```
+__Table 8:__ Sample of the simulated station entry dataset.
+
+## References
+
+Chan, K. (2019, August 08). Urbanized. Retrieved December 23, 2021, from https://dailyhive.com/toronto/ttc-toronto-subway-station-ridership-2018
+
+Flack, D. (2019, May 11). These are the ideal travel times between TTC subway stations. Retrieved December 23, 2021, from https://www.blogto.com/city/2017/02/ideal-travel-times-between-ttc-subway-stations/
+
+TTC. (2014, December). TTC Operating Statistics. Retrieved December 23, 2021, from https://www.ttc.ca/Coupler/Short_Turns/Operating Statistics/index.jsp
+
+King, G., &amp; Nielsen, R. (2019). Why Propensity Scores Should Not Be Used for Matching. Political Analysis, 27(4), 435-454. doi:10.1017/pan.2019.11
+
+Lazaro, E. (2020). TTC Subway Delay Cause Analysis. TTC Subway Delay Cause Analysis.
